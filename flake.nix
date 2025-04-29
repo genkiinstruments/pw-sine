@@ -47,6 +47,7 @@
         pw-sine = pkgs.callPackage ./pw-sine { }; # Another sine generator
         audio-src-midi-chromatic = pkgs.callPackage ./audio-src-midi-chromatic { }; # Another sine generator with chromatic midi scale
         audio-src-midi-synth = pkgs.callPackage ./audio-src-midi-synth { }; # Sine midi synth
+        midiprobe = pkgs.callPackage ./midiprobe { }; # Enumerate MIDI devices
         default = self.packages.${pkgs.system}.pw-sine;
       });
 
