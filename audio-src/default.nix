@@ -1,7 +1,7 @@
 {
   pkgs,
   stdenv,
-  lib ? pkgs.lib,
+  lib,
 }:
 stdenv.mkDerivation {
   pname = "audio-src";
