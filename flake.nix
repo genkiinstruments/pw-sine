@@ -45,6 +45,8 @@
       packages = eachSystem (pkgs: {
         audio-src = pkgs.callPackage ./audio-src { }; # Sine generator from pw examples
         pw-sine = pkgs.callPackage ./pw-sine { }; # Another sine generator
+        pw-midi-logger = pkgs.callPackage ./pw-midi-logger { }; # Another sine generator
+
         audio-src-midi-chromatic = pkgs.callPackage ./audio-src-midi-chromatic { }; # Another sine generator with chromatic midi scale
         audio-src-midi-synth = pkgs.callPackage ./audio-src-midi-synth { }; # Sine midi synth
 
