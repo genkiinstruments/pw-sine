@@ -1,0 +1,310 @@
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <vector>
+#include <queue>     // For std::queue
+#include <mutex>     // For std::mutex and std::lock_guard
+#include <thread>    // Potentially useful, though libremidi handles its thread
+#include <atomic>    // Still potentially useful for signaling, but not for synth state
+
+#include <libremidi/libremidi.hpp>
+#include <soundio/soundio.h>
+
+// --- Configuration ---
+const double DEFAULT_SAMPLE_RATE = 44100.0;
+
+// --- Shared Queue for MIDI Messages ---
+std::queue<libremidi::message> g_midi_queue;
+std::mutex g_midi_queue_mutex; // Protects access to the queue
+
+// --- Synthesizer State (Now only accessed by audio thread) ---
+float g_current_frequency = 0.0f;
+bool g_is_playing = false;
+int g_last_note_number = -1; // MIDI note number currently playing
+
+// --- Audio Callback State ---
+static float seconds_offset = 0.0f; // Phase accumulator
+
+// --- Minimal MIDI Callback (Runs in libremidi's thread) ---
+void midi_enqueue_callback(const libremidi::message& message)
+{
+    try {
+        // Lock the mutex to safely push to the queue
+        std::lock_guard<std::mutex> lock(g_midi_queue_mutex);
+        g_midi_queue.push(message);
+    } catch (const std::system_error& e) {
+        std::cerr << "MIDI Callback: Mutex lock failed: " << e.what() << std::endl;
+        // Handle error appropriately, maybe log or ignore
+    }
+    // std::cout << "MIDI Queued: " << message << std::endl; // Debug
+}
+
+// --- Process MIDI Messages Dequeued in Audio Thread ---
+void process_midi_message(const libremidi::message& message)
+{
+    // std::cout << "Audio Thread Processing: " << message << std::endl; // Debug
+    switch (message.get_type()) {
+    case libremidi::message_type::NOTE_ON: {
+        int note_number = message.bytes[1];
+        int velocity = message.bytes[2];
+
+        if (velocity > 0) { // Note On
+            g_current_frequency = 440.0f * powf(2.0f, (float)(note_number - 69) / 12.0f);
+            g_last_note_number = note_number;
+            g_is_playing = true;
+        } else { // Note On with velocity 0 is Note Off
+            if (note_number == g_last_note_number) {
+                g_is_playing = false;
+                g_last_note_number = -1;
+            }
+        }
+        break;
+    }
+    case libremidi::message_type::NOTE_OFF: {
+        int note_number = message.bytes[1];
+        if (note_number == g_last_note_number) {
+            g_is_playing = false;
+            g_last_note_number = -1;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+
+// --- Audio Callback (Runs in libsoundio's real-time thread) ---
+static void write_callback(struct SoundIoOutStream* outstream,
+    int frame_count_min, int frame_count_max)
+{
+    // 1. Dequeue and process MIDI messages first
+    std::vector<libremidi::message> messages_to_process;
+    try {
+         std::lock_guard<std::mutex> lock(g_midi_queue_mutex);
+         while (!g_midi_queue.empty()) {
+             messages_to_process.push_back(g_midi_queue.front());
+             g_midi_queue.pop();
+         }
+    } catch (const std::system_error& e) {
+         std::cerr << "Audio Callback: Mutex lock failed: " << e.what() << std::endl;
+         // Decide how to handle this - potentially skip MIDI processing for this block
+    }
+
+
+    // Process the dequeued messages *outside* the lock
+    for(const auto& msg : messages_to_process) {
+        process_midi_message(msg);
+    }
+
+    // 2. Generate Audio based on current state (g_is_playing, g_current_frequency)
+    const struct SoundIoChannelLayout* layout = &outstream->layout;
+    float float_sample_rate = outstream->sample_rate;
+    float seconds_per_frame = 1.0f / float_sample_rate;
+    struct SoundIoChannelArea* areas;
+    int frames_left = frame_count_max; // Use max for simpler buffer filling
+    int err;
+
+    // Use the state variables directly (no atomics needed)
+    bool playing_now = g_is_playing;
+    float freq_now = g_current_frequency;
+
+    while (frames_left > 0) {
+        int frame_count = frames_left;
+
+        if ((err = soundio_outstream_begin_write(outstream, &areas, &frame_count))) {
+            fprintf(stderr, "Audio begin write error: %s (frames_left: %d)\n", soundio_strerror(err), frames_left);
+            // Attempting to recover might be complex, maybe just zero out remaining buffer?
+             // For simplicity, return might be okay if errors are rare, but could lead to silence gaps.
+            return;
+        }
+
+        if (!frame_count) {
+             // This means the stream is likely closing or stopped.
+             // fprintf(stderr, "Warning: begin_write returned 0 frames.\n");
+             break;
+        }
+
+
+        if (playing_now) {
+            float radians_per_second = freq_now * 2.0f * M_PI;
+            for (int frame = 0; frame < frame_count; ++frame) {
+                float sample = sinf((seconds_offset + frame * seconds_per_frame) * radians_per_second);
+                for (int channel = 0; channel < layout->channel_count; ++channel) {
+                    float* ptr = (float*)(areas[channel].ptr + areas[channel].step * frame);
+                    *ptr = sample * 0.5f;
+                }
+            }
+            seconds_offset = fmodf(seconds_offset + seconds_per_frame * frame_count, 1.0f);
+        } else {
+            // Silence
+             for (int channel = 0; channel < layout->channel_count; ++channel) {
+                 // More efficient silence generation: Zero the whole area if possible
+                 // Check if step is standard float size for memset safety
+                 if (areas[channel].step == sizeof(float)) {
+                     memset(areas[channel].ptr, 0, frame_count * sizeof(float));
+                 } else {
+                    // Fallback if channel layout is non-contiguous
+                     for (int frame = 0; frame < frame_count; ++frame) {
+                         float* ptr = (float*)(areas[channel].ptr + areas[channel].step * frame);
+                         *ptr = 0.0f;
+                     }
+                 }
+            }
+             // seconds_offset doesn't advance or reset here
+        }
+
+        if ((err = soundio_outstream_end_write(outstream))) {
+            fprintf(stderr, "Audio end write error: %s\n", soundio_strerror(err));
+             // Similar to begin_write error, returning might be simplest, but potentially problematic.
+             return;
+        }
+
+        frames_left -= frame_count;
+    }
+}
+
+
+// --- Main Function (Remains largely the same, but uses midi_enqueue_callback) ---
+int main(int argc, char** argv)
+{
+    int err;
+
+    // --- MIDI Initialization ---
+    libremidi::midi_in midiin{
+        {
+            .on_message = midi_enqueue_callback, // Use the enqueue callback
+        },
+        libremidi::midi_in_configuration{}
+    };
+
+    // (Port selection logic remains the same as before...)
+    unsigned int port_count = midiin.get_port_count();
+    if (port_count == 0) {
+        std::cerr << "No MIDI input ports available!" << std::endl;
+        return 1;
+    }
+    std::cout << "Available MIDI input ports:\n";
+    for (unsigned int i = 0; i < port_count; ++i) {
+        std::cout << i << ": " << midiin.get_port_name(i) << '\n';
+    }
+    unsigned int port_num = 0;
+    if (port_count > 1) {
+        std::cout << "Select port number: ";
+        std::cin >> port_num;
+        while (std::cin.fail() || port_num >= port_count) {
+             std::cerr << "Invalid port number. Please enter a value between 0 and " << (port_count - 1) << ": ";
+             std::cin.clear();
+             std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+             std::cin >> port_num;
+        }
+    }
+     try {
+        midiin.open_port(port_num);
+        std::cout << "Opened MIDI port: " << midiin.get_port_name(port_num) << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "Error opening MIDI port: " << e.what() << std::endl;
+        return 1;
+    }
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+
+    // --- Audio Initialization ---
+    // (SoundIo initialization remains the same as before...)
+     struct SoundIo* soundio = soundio_create();
+    if (!soundio) {
+        fprintf(stderr, "out of memory (soundio_create)\n");
+        return 1;
+    }
+    err = soundio_connect(soundio); // Connect to default backend
+    if (err) {
+        fprintf(stderr, "Error connecting audio backend: %s\n", soundio_strerror(err));
+        soundio_destroy(soundio);
+        return 1;
+    }
+    soundio_flush_events(soundio);
+    int default_out_device_index = soundio_default_output_device_index(soundio);
+    if (default_out_device_index < 0) {
+        fprintf(stderr, "No output audio device found\n");
+        soundio_destroy(soundio);
+        return 1;
+    }
+    struct SoundIoDevice* device = soundio_get_output_device(soundio, default_out_device_index);
+    if (!device) {
+        fprintf(stderr, "out of memory (soundio_get_output_device)\n");
+        soundio_destroy(soundio);
+        return 1;
+    }
+    fprintf(stderr, "Audio Output device: %s\n", device->name);
+
+    double selected_sample_rate = DEFAULT_SAMPLE_RATE;
+     if (device->sample_rate_current > 0) {
+        selected_sample_rate = device->sample_rate_current;
+        fprintf(stderr, "Using device sample rate: %.0f Hz\n", selected_sample_rate);
+    } else if (device->sample_rate_count > 0 && device->sample_rates[0].min > 0) {
+         selected_sample_rate = device->sample_rates[0].max;
+         fprintf(stderr, "Using device preferred sample rate: %.0f Hz\n", selected_sample_rate);
+    } else {
+         fprintf(stderr, "Using default sample rate: %.0f Hz\n", selected_sample_rate);
+    }
+
+    struct SoundIoOutStream* outstream = soundio_outstream_create(device);
+    if (!outstream) {
+        fprintf(stderr, "out of memory (soundio_outstream_create)\n");
+        soundio_device_unref(device);
+        soundio_destroy(soundio);
+        return 1;
+    }
+
+    outstream->format = SoundIoFormatFloat32NE;
+    outstream->write_callback = write_callback; // This is our combined callback
+    outstream->sample_rate = selected_sample_rate;
+    // Optional: Set latency hint (e.g., low latency)
+    // outstream->software_latency = 0.01; // Example: request ~10ms latency
+
+    if ((err = soundio_outstream_open(outstream))) {
+        fprintf(stderr, "Unable to open audio device stream: %s\n", soundio_strerror(err));
+        // Potential fix: Check suggested latency if open fails
+        // fprintf(stderr, "Suggested latency: %f\n", outstream->software_latency);
+        soundio_outstream_destroy(outstream);
+        soundio_device_unref(device);
+        soundio_destroy(soundio);
+        return 1;
+    }
+
+     if (outstream->layout_error)
+        fprintf(stderr, "Warning: unable to set channel layout: %s\n", soundio_strerror(outstream->layout_error));
+
+    // Report actual latency
+    fprintf(stderr, "Audio latency: %.3f sec (%.1f ms)\n",
+        outstream->software_latency, outstream->software_latency * 1000.0);
+
+
+    // --- Start Audio Stream ---
+    if ((err = soundio_outstream_start(outstream))) {
+        fprintf(stderr, "Unable to start audio device stream: %s\n", soundio_strerror(err));
+        soundio_outstream_destroy(outstream);
+        soundio_device_unref(device);
+        soundio_destroy(soundio);
+        return 1;
+    }
+
+    // --- Run Loop ---
+    fprintf(stderr, "Synth running. Send MIDI notes. Press Ctrl+C to quit.\n");
+    for (;;) {
+        soundio_wait_events(soundio); // Block until events (like audio buffer needed)
+        // Optional: Can add a very short sleep here if CPU usage is high
+        // std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+
+    // --- Cleanup (unreachable in infinite loop) ---
+    // ... (cleanup code remains the same) ...
+    // midiin destructor handles its cleanup
+    // soundio_outstream_destroy(outstream);
+    // soundio_device_unref(device);
+    // soundio_destroy(soundio);
+
+    return 0;
+}
+
+

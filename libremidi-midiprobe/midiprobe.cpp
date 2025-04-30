@@ -1,4 +1,4 @@
-// Simple midiprobe without complex utils.hpp dependencies
+// Simple libremidi-libremidi-midiprobe without complex utils.hpp dependencies
 #include <libremidi/libremidi.hpp>
 #include <iostream>
 #include <chrono>

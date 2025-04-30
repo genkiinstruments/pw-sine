@@ -3,13 +3,12 @@
   stdenv,
   lib,
   libremidi,
-  fetchFromGitHub,
 }:
 stdenv.mkDerivation {
-  pname = "midiprobe";
+  pname = "libremidi-midiprobe";
   version = "0.1";
 
-  # Use the current directory containing midiprobe.cpp as the source
+  # Use the current directory containing libremidi-libremidi-midiprobe.cpp as the source
   src = ./.;
 
   # Dependencies needed ONLY during the build process itself
@@ -29,7 +28,7 @@ stdenv.mkDerivation {
   buildPhase = ''
     runHook preBuild
 
-    $CXX midiprobe.cpp -o midiprobe \
+    $CXX libremidi-libremidi-midiprobe.cpp -o libremidi-libremidi-midiprobe \
       -std=c++20 \
       -DLIBREMIDI_ALSA=1 \
       -DLIBREMIDI_HEADER_ONLY=1 \
@@ -42,7 +41,7 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
 
-    install -Dm755 midiprobe $out/bin/midiprobe
+    install -Dm755 libremidi-libremidi-midiprobe $out/bin/libremidi-libremidi-midiprobe
 
     runHook postInstall
   '';
