@@ -1,7 +1,8 @@
 {
-  pkgs,
   stdenv,
   lib,
+  pkg-config,
+  pipewire,
 }:
 stdenv.mkDerivation {
   pname = "audio-src-midi-chromatic";
@@ -12,12 +13,12 @@ stdenv.mkDerivation {
 
   # Dependencies needed ONLY during the build process itself
   nativeBuildInputs = [
-    pkgs.pkg-config # Needed to find library flags
+    pkg-config # Needed to find library flags
   ];
 
   # Dependencies needed by the program at runtime AND for building (headers, .so files)
   buildInputs = [
-    pkgs.pipewire # Provides libpipewire, libspa, and headers
+    pipewire # Provides libpipewire, libspa, and headers
   ];
 
   # No configure step needed for this simple C file

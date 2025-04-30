@@ -1,8 +1,9 @@
 {
-  pkgs,
   stdenv,
   lib,
   libremidi,
+  alsa-lib,
+  pkg-config,
 }:
 stdenv.mkDerivation {
   pname = "libremidi-midiprobe";
@@ -13,12 +14,12 @@ stdenv.mkDerivation {
 
   # Dependencies needed ONLY during the build process itself
   nativeBuildInputs = [
-    pkgs.pkg-config # Needed to find library flags
+    pkg-config # Needed to find library flags
   ];
 
   # Dependencies needed by the program at runtime AND for building (headers, .so files)
   buildInputs = [
-    pkgs.alsa-lib
+    alsa-lib
   ];
 
   # No configure step needed for this simple C++ file

@@ -1,9 +1,10 @@
 {
-  pkgs,
   stdenv,
   lib,
+  pipewire,
+  pkg-config,
 }:
-stdenv.mkDerivation {
+stdenv.mkDerivation (finalAttrs: {
   pname = "audio-src";
   version = "0.1";
 
@@ -12,12 +13,12 @@ stdenv.mkDerivation {
 
   # Dependencies needed ONLY during the build process itself
   nativeBuildInputs = [
-    pkgs.pkg-config # Needed to find library flags
+    pkg-config # Needed to find library flags
   ];
 
   # Dependencies needed by the program at runtime AND for building (headers, .so files)
   buildInputs = [
-    pkgs.pipewire # Provides libpipewire, libspa, and headers
+    pipewire # Provides libpipewire, libspa, and headers
   ];
 
   # No configure step needed for this simple C file
@@ -29,8 +30,7 @@ stdenv.mkDerivation {
 
     # Compile the C file using the compiler from stdenv ($CC)
     # We explicitly include both pipewire and spa headers
-    $CC audio-src.c -o audio-src \
-      $(pkg-config --cflags --libs libpipewire-0.3 libspa-0.2) -lm
+    $CC audio-src.c -o ${finalAttrs.pname} -lpipewire -lspa -lm
 
     runHook postBuild
   '';
@@ -38,7 +38,7 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
 
-    install -Dm755 audio-src $out/bin/audio-src
+    install -Dm755 ${finalAttrs.pname} $out/bin/${finalAttrs.pname}
 
     runHook postInstall
   '';
@@ -47,4 +47,4 @@ stdenv.mkDerivation {
     description = "Simple PipeWire sine wave generator";
     platforms = platforms.all;
   };
-}
+})

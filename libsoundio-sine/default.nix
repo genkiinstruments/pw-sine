@@ -1,7 +1,8 @@
 {
-  pkgs,
   stdenv,
   lib,
+  libsoundio,
+  pkg-config,
 }:
 stdenv.mkDerivation (finalAttrs: {
   pname = "libsoundio-sine";
@@ -10,11 +11,11 @@ stdenv.mkDerivation (finalAttrs: {
   src = ./.;
 
   nativeBuildInputs = [
-    pkgs.pkg-config
+    pkg-config
   ];
 
   buildInputs = [
-    pkgs.libsoundio
+    libsoundio
   ];
 
   # No configure step needed for this simple C file
