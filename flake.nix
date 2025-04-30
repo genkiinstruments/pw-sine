@@ -47,7 +47,10 @@
         pw-sine = pkgs.callPackage ./pw-sine { }; # Another sine generator
         audio-src-midi-chromatic = pkgs.callPackage ./audio-src-midi-chromatic { }; # Another sine generator with chromatic midi scale
         audio-src-midi-synth = pkgs.callPackage ./audio-src-midi-synth { }; # Sine midi synth
+
         libremidi-midiprobe = pkgs.callPackage ./libremidi-midiprobe { }; # Enumerate MIDI devices
+        libremidi-pipewire-midi1-in = pkgs.callPackage ./libremidi-pipewire-midi1-in { }; # Libremidi Pipewire example
+
         libsoundio-sine = pkgs.callPackage ./libsoundio-sine { }; # Play sine wave using libsoundio
         libsoundio-libremidi-sine-synth = pkgs.callPackage ./libsoundio-libremidi-sine-synth { }; # Monophonic wave synth using libsoundio and libremidi
         default = self.packages.${pkgs.system}.pw-sine;
